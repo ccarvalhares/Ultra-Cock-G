@@ -88,6 +88,12 @@ if (process.env.NODE_ENV === 'production') {
     });
 }
 
+// Error Handling Middleware
+app.use((err, req, res, next) => {
+    console.error("Global Error Handler:", err.stack);
+    res.status(500).send('Internal Server Error: ' + err.message);
+});
+
 // Start Server
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

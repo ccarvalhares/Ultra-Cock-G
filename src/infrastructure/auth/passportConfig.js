@@ -34,6 +34,7 @@ passport.use(new DiscordStrategy({
         await user.save();
         done(null, user);
     } catch (err) {
+        console.error("Passport Strategy Error:", err);
         done(err, null);
     }
 }));
