@@ -12,7 +12,7 @@ const Layout = ({ children }) => {
                     <div className="space-x-4">
                         <Link to="/dashboard" className="hover:text-red-400 transition">Dashboard</Link>
                         <Link to="/character-select" className="hover:text-red-400 transition">Characters</Link>
-                        <a href="http://localhost:3000/logout" className="hover:text-red-400 transition">Logout</a>
+                        <a href="/logout" className="hover:text-red-400 transition">Logout</a>
                     </div>
                 </div>
             </nav>

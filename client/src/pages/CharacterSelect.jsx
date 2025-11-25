@@ -10,7 +10,7 @@ const CharacterSelect = () => {
     useEffect(() => {
         const fetchCharacters = async () => {
             try {
-                const res = await axios.get('http://localhost:3000/api/characters');
+                const res = await axios.get('/api/characters');
                 setCharacters(res.data);
             } catch (err) {
                 console.error(err);

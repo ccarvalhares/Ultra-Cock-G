@@ -8,7 +8,7 @@ const Dashboard = () => {
     useEffect(() => {
         const fetchUser = async () => {
             try {
-                const res = await axios.get('http://localhost:3000/api/user', { withCredentials: true });
+                const res = await axios.get('/api/user', { withCredentials: true });
                 setUser(res.data);
             } catch (err) {
                 console.error(err);

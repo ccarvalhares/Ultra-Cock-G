@@ -2,7 +2,8 @@ import React from 'react';
 
 const Login = () => {
     const handleLogin = () => {
-        window.location.href = 'http://localhost:3000/auth/discord';
+        // Use relative path so it works in both dev (with proxy) and prod
+        window.location.href = '/auth/discord';
     };
 
     return (
