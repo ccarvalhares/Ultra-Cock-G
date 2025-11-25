@@ -45,7 +45,11 @@ app.get('/auth/discord', passport.authenticate('discord'));
 app.get('/auth/discord/callback',
     passport.authenticate('discord', { failureRedirect: '/' }),
     (req, res) => {
-        res.redirect('http://localhost:5173/dashboard'); // Redirect to frontend dashboard
+        if (process.env.NODE_ENV === 'production') {
+            res.redirect('/dashboard');
+        } else {
+            res.redirect('http://localhost:5173/dashboard');
+        }
     }
 );
 
