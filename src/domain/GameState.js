@@ -5,18 +5,27 @@ class GameState {
     constructor(players) {
         this.players = players.map((p, index) => ({
             ...p,
-            hp: p.class.baseStats.hp,
-            mp: p.class.baseStats.mp,
-            maxHp: p.class.baseStats.hp,
-            maxMp: p.class.baseStats.mp,
             isDead: false,
-            cooldowns: {}, // { skillName: timestamp }
+            cooldowns: {},
             lastActionTime: 0,
-            position: { x: index * 2, y: 0, z: 0 }, // Simple starting positions
+            position: { x: index * 2, y: 0, z: 0 },
             rotation: 0
         }));
         this.logs = [];
         this.winner = null;
+        this.isStarted = false;
+    }
+
+    startBattle() {
+        this.players.forEach(p => {
+            if (p.class) {
+                p.hp = p.class.baseStats.hp;
+                p.mp = p.class.baseStats.mp;
+                p.maxHp = p.class.baseStats.hp;
+                p.maxMp = p.class.baseStats.mp;
+            }
+        });
+        this.isStarted = true;
     }
 
     updatePlayerPosition(socketId, position, rotation) {

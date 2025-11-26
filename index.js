@@ -164,6 +164,7 @@ io.on('connection', (socket) => {
 
             // Check if all ready
             if (game.players.every(p => p.isReady)) {
+                game.startBattle();
                 io.to(gameId).emit('game_start', game.getState());
             }
         }
