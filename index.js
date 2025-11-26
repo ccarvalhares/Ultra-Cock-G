@@ -104,8 +104,10 @@ const io = new Server(server, {
     }
 });
 
-// Game State (In-memory for now)
+// Game State
+const GameState = require('./src/domain/GameState');
 let connectedPlayers = [];
+let activeGame = null;
 
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
@@ -113,13 +115,48 @@ io.on('connection', (socket) => {
     socket.on('join_game', (userData) => {
         // Avoid duplicates
         if (!connectedPlayers.find(p => p.discordId === userData.discordId)) {
-            connectedPlayers.push({ ...userData, socketId: socket.id });
+            connectedPlayers.push({ ...userData, socketId: socket.id, isReady: false });
         }
 
         io.emit('player_list', connectedPlayers);
+    });
 
-        if (connectedPlayers.length >= 3) {
-            io.emit('game_ready', { message: "3 Players Connected! Game Starting..." });
+    socket.on('select_character', (character) => {
+        const player = connectedPlayers.find(p => p.socketId === socket.id);
+        if (player) {
+            player.character = character;
+            player.class = character.class; // Flatten for easier access
+            player.isReady = true;
+            io.emit('player_list', connectedPlayers);
+
+            // Check if all 3 players are ready
+            const readyPlayers = connectedPlayers.filter(p => p.isReady);
+            if (readyPlayers.length >= 3 && !activeGame) {
+                activeGame = new GameState(readyPlayers);
+                io.emit('game_start', activeGame.getState());
+            }
+        }
+    });
+
+    socket.on('submit_action', (action) => {
+        if (!activeGame) return;
+
+        const result = activeGame.processAction(action);
+        if (result.valid) {
+            activeGame.nextTurn();
+            io.emit('turn_update', activeGame.getState());
+
+            if (activeGame.winner) {
+                io.emit('game_over', activeGame.winner);
+                // Reset game after delay
+                setTimeout(() => {
+                    activeGame = null;
+                    connectedPlayers.forEach(p => p.isReady = false);
+                    io.emit('player_list', connectedPlayers);
+                }, 10000);
+            }
+        } else {
+            socket.emit('action_error', result.message);
         }
     });
 
@@ -127,12 +164,16 @@ io.on('connection', (socket) => {
         console.log('User disconnected:', socket.id);
         connectedPlayers = connectedPlayers.filter(p => p.socketId !== socket.id);
         io.emit('player_list', connectedPlayers);
+
+        if (activeGame && activeGame.players.find(p => p.socketId === socket.id)) {
+            io.emit('game_over', { username: "Game Aborted (Player Disconnected)" });
+            activeGame = null;
+        }
     });
 });
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
-    console.error("Global Error Handler:", err.stack);
     res.status(500).send('Internal Server Error: ' + err.message);
 });
 
