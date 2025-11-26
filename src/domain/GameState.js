@@ -11,6 +11,7 @@ class GameState {
             maxMp: p.class.baseStats.mp,
             isDead: false,
             cooldowns: {}, // { skillName: timestamp }
+            lastActionTime: 0,
             position: { x: index * 2, y: 0, z: 0 }, // Simple starting positions
             rotation: 0
         }));
@@ -35,8 +36,14 @@ class GameState {
         if (attacker.isDead) return { valid: false, message: "You are dead" };
         if (target.isDead) return { valid: false, message: "Target is already dead" };
 
-        // Check Cooldown (Real-time: use Date.now())
+        // Global Cooldown (100ms discrete interval)
         const now = Date.now();
+        if (attacker.lastActionTime && now - attacker.lastActionTime < 100) {
+            return { valid: false, message: "Too fast!" };
+        }
+        attacker.lastActionTime = now;
+
+        // Check Skill Cooldown
         if (attacker.cooldowns[skill.name] && now < attacker.cooldowns[skill.name]) {
             return { valid: false, message: "Skill on cooldown" };
         }
