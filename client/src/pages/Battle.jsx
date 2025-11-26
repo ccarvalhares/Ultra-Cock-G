@@ -1,55 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import axios from 'axios';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Text, Html } from '@react-three/drei';
 import CharacterCard from '../components/CharacterCard';
-import * as THREE from 'three';
-
-// 3D Player Component
-const Player3D = ({ position, rotation, isMe, username, avatar, hp, maxHp }) => {
-    const meshRef = useRef();
-
-    useFrame(() => {
-        if (meshRef.current) {
-            // Smooth interpolation
-            meshRef.current.position.lerp(new THREE.Vector3(position.x, position.y, position.z), 0.1);
-            meshRef.current.rotation.y = rotation;
-        }
-    });
-
-    return (
-        <group ref={meshRef} position={[position.x, position.y, position.z]}>
-            {/* Player Body */}
-            <mesh position={[0, 1, 0]}>
-                <capsuleGeometry args={[0.5, 1, 4, 8]} />
-                <meshStandardMaterial color={isMe ? "green" : "red"} />
-            </mesh>
-
-            {/* Username & HP Bar */}
-            <Html position={[0, 2.5, 0]} center>
-                <div className="flex flex-col items-center pointer-events-none">
-                    {/* Avatar */}
-                    <img
-                        src={avatar}
-                        alt="avatar"
-                        className="w-8 h-8 rounded-full border border-white mb-1"
-                        onError={(e) => { e.target.onerror = null; e.target.src = "https://cdn.discordapp.com/embed/avatars/0.png"; }}
-                    />
-                    <div className="text-white font-bold text-sm bg-black bg-opacity-50 px-2 rounded mb-1 whitespace-nowrap">
-                        {username}
-                    </div>
-                    <div className="w-16 h-2 bg-gray-700 rounded-full border border-black">
-                        <div
-                            className="h-full bg-red-500 rounded-full transition-all duration-300"
-                            style={{ width: `${(hp / maxHp) * 100}%` }}
-                        />
-                    </div>
-                </div>
-            </Html>
-        </group>
-    );
-};
 
 const Battle = () => {
     const [socket, setSocket] = useState(null);
@@ -60,7 +12,10 @@ const Battle = () => {
     const [selectedChar, setSelectedChar] = useState(null);
     const [gameStatus, setGameStatus] = useState('Connecting...');
     const [gameId, setGameId] = useState(null);
-    const [selectedMode, setSelectedMode] = useState(null); // '1v1' or '1v1v1'
+    const [selectedMode, setSelectedMode] = useState(null);
+
+    // Canvas Ref
+    const canvasRef = useRef(null);
 
     // Movement State
     const keys = useRef({});
@@ -167,11 +122,21 @@ const Battle = () => {
         };
     }, []);
 
-    // Game Loop (Movement)
+    // Game Loop (Movement & Rendering)
     useEffect(() => {
-        if (!gameState || !socket || !gameId) return;
+        if (!gameState || !socket || !gameId || !canvasRef.current) return;
 
-        const interval = setInterval(() => {
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        let animationFrameId;
+
+        // SCALE FACTOR (World Units -> Pixels)
+        const SCALE = 40;
+        const CENTER_X = canvas.width / 2;
+        const CENTER_Y = canvas.height / 2;
+
+        const render = () => {
+            // 1. Movement Logic
             let moved = false;
             const speed = 0.2;
 
@@ -198,9 +163,95 @@ const Battle = () => {
                     return { ...prev, players: newPlayers };
                 });
             }
-        }, 30); // 30ms tick
 
-        return () => clearInterval(interval);
+            // 2. Rendering Logic
+            // Clear Screen
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Grid
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            const gridSize = 50;
+            const offsetX = (myPosition.current.x * SCALE) % gridSize;
+            const offsetY = (myPosition.current.z * SCALE) % gridSize;
+
+            for (let x = -gridSize; x < canvas.width + gridSize; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x - offsetX, 0);
+                ctx.lineTo(x - offsetX, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = -gridSize; y < canvas.height + gridSize; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y - offsetY);
+                ctx.lineTo(canvas.width, y - offsetY);
+                ctx.stroke();
+            }
+
+            // Draw Players
+            gameState.players.forEach(p => {
+                if (p.isDead) return;
+
+                // Convert World Pos to Screen Pos (Relative to Me)
+                // Me is always at CENTER_X, CENTER_Y
+                const relX = (p.position.x - myPosition.current.x) * SCALE;
+                const relY = (p.position.z - myPosition.current.z) * SCALE;
+
+                const screenX = CENTER_X + relX;
+                const screenY = CENTER_Y + relY;
+
+                // Draw Shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.beginPath();
+                ctx.ellipse(screenX, screenY + 20, 15, 8, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Draw Body (Circle)
+                ctx.fillStyle = p.discordId === user.discordId ? '#4ade80' : '#f87171';
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, 20, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw Direction Indicator
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(screenX, screenY);
+                ctx.lineTo(
+                    screenX + Math.sin(p.rotation) * 30,
+                    screenY + Math.cos(p.rotation) * 30
+                );
+                ctx.stroke();
+
+                // Draw Username
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(p.username, screenX, screenY - 35);
+
+                // Draw HP Bar
+                const hpWidth = 40;
+                const hpHeight = 6;
+                const hpPct = p.hp / p.maxHp;
+                ctx.fillStyle = '#333';
+                ctx.fillRect(screenX - hpWidth / 2, screenY - 30, hpWidth, hpHeight);
+                ctx.fillStyle = '#ef4444';
+                ctx.fillRect(screenX - hpWidth / 2, screenY - 30, hpWidth * hpPct, hpHeight);
+            });
+
+            animationFrameId = requestAnimationFrame(render);
+        };
+
+        render();
+
+        return () => {
+            cancelAnimationFrame(animationFrameId);
+            clearInterval(interval); // Clear movement interval if it was separate
+        };
     }, [gameState, socket, user, gameId]);
 
     const handleJoinQueue = (mode) => {
@@ -249,7 +300,6 @@ const Battle = () => {
         if (p.avatar) {
             return `https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png`;
         }
-        // Default avatar logic
         const disc = p.discriminator || '0';
         const index = disc === '0' ? (BigInt(p.discordId) >> 22n) % 6n : parseInt(disc) % 5;
         return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
@@ -312,47 +362,26 @@ const Battle = () => {
         );
     }
 
-    // 3D BATTLE
+    // 2D CANVAS BATTLE
     const me = gameState.players.find(p => p.discordId === user.discordId);
 
     return (
-        <div className="w-full h-screen relative">
-            {/* 3D Scene */}
-            <Canvas camera={{ position: [0, 10, 10], fov: 50 }}>
-                <ambientLight intensity={0.5} />
-                <pointLight position={[10, 10, 10]} />
-                <OrbitControls />
-
-                {/* Ground */}
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
-                    <planeGeometry args={[50, 50]} />
-                    <meshStandardMaterial color="#333" />
-                </mesh>
-
-                {/* Players */}
-                {gameState.players.map((p, idx) => (
-                    !p.isDead && (
-                        <Player3D
-                            key={idx}
-                            position={p.position}
-                            rotation={p.rotation}
-                            isMe={p.discordId === user.discordId}
-                            username={p.username}
-                            avatar={getAvatarUrl(p)}
-                            hp={p.hp}
-                            maxHp={p.maxHp}
-                        />
-                    )
-                ))}
-            </Canvas>
+        <div className="w-full h-screen relative bg-black flex justify-center items-center">
+            {/* Canvas Renderer */}
+            <canvas
+                ref={canvasRef}
+                width={800}
+                height={600}
+                className="border-4 border-gray-700 rounded-lg bg-[#1a1a1a] shadow-2xl"
+            />
 
             {/* UI Overlay */}
-            <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-70 p-4 rounded-lg flex gap-2">
+            <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-80 p-4 rounded-lg flex gap-2 border border-gray-600">
                 {me && !me.isDead && me.class.skills.map((skill, idx) => (
                     <button
                         key={idx}
                         onClick={() => handleAttack(skill)}
-                        className="bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded font-bold text-sm"
+                        className="bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded font-bold text-sm border-b-4 border-red-900 active:border-b-0 active:translate-y-1 transition-all"
                     >
                         {skill.name}
                     </button>
@@ -360,8 +389,14 @@ const Battle = () => {
             </div>
 
             {/* Top Status */}
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 text-white font-bold text-xl drop-shadow-md">
+            <div className="absolute top-8 left-1/2 transform -translate-x-1/2 text-white font-bold text-2xl drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)] tracking-wider">
                 {gameStatus}
+            </div>
+
+            {/* Controls Info */}
+            <div className="absolute top-8 right-8 text-gray-400 text-sm bg-black bg-opacity-50 p-2 rounded">
+                <p>WASD to Move</p>
+                <p>Click Skills to Attack</p>
             </div>
         </div>
     );
