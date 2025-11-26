@@ -92,6 +92,44 @@ if (process.env.NODE_ENV === 'production') {
     });
 }
 
+const http = require('http');
+const { Server } = require("socket.io");
+
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: process.env.NODE_ENV === 'production' ? "https://ultra-cock-g.onrender.com" : "http://localhost:5173",
+        methods: ["GET", "POST"],
+        credentials: true
+    }
+});
+
+// Game State (In-memory for now)
+let connectedPlayers = [];
+
+io.on('connection', (socket) => {
+    console.log('A user connected:', socket.id);
+
+    socket.on('join_game', (userData) => {
+        // Avoid duplicates
+        if (!connectedPlayers.find(p => p.discordId === userData.discordId)) {
+            connectedPlayers.push({ ...userData, socketId: socket.id });
+        }
+
+        io.emit('player_list', connectedPlayers);
+
+        if (connectedPlayers.length >= 3) {
+            io.emit('game_ready', { message: "3 Players Connected! Game Starting..." });
+        }
+    });
+
+    socket.on('disconnect', () => {
+        console.log('User disconnected:', socket.id);
+        connectedPlayers = connectedPlayers.filter(p => p.socketId !== socket.id);
+        io.emit('player_list', connectedPlayers);
+    });
+});
+
 // Error Handling Middleware
 app.use((err, req, res, next) => {
     console.error("Global Error Handler:", err.stack);
@@ -99,6 +137,6 @@ app.use((err, req, res, next) => {
 });
 
 // Start Server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
