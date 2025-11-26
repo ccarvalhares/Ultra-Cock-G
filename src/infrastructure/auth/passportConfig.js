@@ -29,7 +29,8 @@ passport.use(new DiscordStrategy({
         user = new User({
             discordId: profile.id,
             username: profile.username,
-            avatar: profile.avatar
+            avatar: profile.avatar, // Can be null if no avatar set
+            discriminator: profile.discriminator || '0000'
         });
         await user.save();
         done(null, user);

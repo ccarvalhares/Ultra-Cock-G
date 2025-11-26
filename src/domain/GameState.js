@@ -3,40 +3,27 @@ const Balancing = require('./Balancing');
 
 class GameState {
     constructor(players) {
-        this.players = players.map(p => ({
+        this.players = players.map((p, index) => ({
             ...p,
             hp: p.class.baseStats.hp,
             mp: p.class.baseStats.mp,
             maxHp: p.class.baseStats.hp,
             maxMp: p.class.baseStats.mp,
             isDead: false,
-            cooldowns: {} // { skillName: turnsRemaining }
+            cooldowns: {}, // { skillName: timestamp }
+            position: { x: index * 2, y: 0, z: 0 }, // Simple starting positions
+            rotation: 0
         }));
-        this.turnIndex = 0;
         this.logs = [];
         this.winner = null;
     }
 
-    getCurrentPlayer() {
-        return this.players[this.turnIndex];
-    }
-
-    nextTurn() {
-        let attempts = 0;
-        do {
-            this.turnIndex = (this.turnIndex + 1) % this.players.length;
-            attempts++;
-        } while (this.players[this.turnIndex].isDead && attempts < this.players.length);
-
-        // Reduce cooldowns for the new active player
-        const currentPlayer = this.getCurrentPlayer();
-        for (const skill in currentPlayer.cooldowns) {
-            if (currentPlayer.cooldowns[skill] > 0) {
-                currentPlayer.cooldowns[skill]--;
-            }
+    updatePlayerPosition(socketId, position, rotation) {
+        const player = this.players.find(p => p.socketId === socketId);
+        if (player && !player.isDead) {
+            player.position = position;
+            player.rotation = rotation;
         }
-
-        return currentPlayer;
     }
 
     processAction(action) {
@@ -47,14 +34,17 @@ class GameState {
         if (!attacker || !target) return { valid: false, message: "Invalid targets" };
         if (attacker.isDead) return { valid: false, message: "You are dead" };
         if (target.isDead) return { valid: false, message: "Target is already dead" };
-        if (attacker.socketId !== this.getCurrentPlayer().socketId) return { valid: false, message: "Not your turn" };
+
+        // Check Cooldown (Real-time: use Date.now())
+        const now = Date.now();
+        if (attacker.cooldowns[skill.name] && now < attacker.cooldowns[skill.name]) {
+            return { valid: false, message: "Skill on cooldown" };
+        }
+
         if (attacker.mp < skill.cost) return { valid: false, message: "Not enough MP" };
-        if (attacker.cooldowns[skill.name] > 0) return { valid: false, message: "Skill on cooldown" };
 
         // Calculate Damage
         let damage = skill.damage;
-
-        // Apply Balancing Multiplier
         const multiplier = Balancing.getMultiplier(attacker.class.name, target.class.name);
         damage = Math.floor(damage * multiplier);
 
@@ -65,18 +55,18 @@ class GameState {
             target.isDead = true;
             this.logs.push(`${attacker.username} killed ${target.username} with ${skill.name}!`);
         } else {
-            this.logs.push(`${attacker.username} used ${skill.name} on ${target.username} for ${damage} damage.`);
+            this.logs.push(`${attacker.username} hit ${target.username} for ${damage} damage.`);
         }
 
         // Consume MP
         attacker.mp -= skill.cost;
 
-        // Set Cooldown (Simple 3 turn cooldown for all active skills for now)
-        attacker.cooldowns[skill.name] = 3;
+        // Set Cooldown (e.g., 3 seconds)
+        attacker.cooldowns[skill.name] = now + 3000;
 
         // Check Win Condition
         const alivePlayers = this.players.filter(p => !p.isDead);
-        if (alivePlayers.length === 1) {
+        if (alivePlayers.length === 1 && this.players.length > 1) {
             this.winner = alivePlayers[0];
         }
 
@@ -86,7 +76,6 @@ class GameState {
     getState() {
         return {
             players: this.players,
-            turnIndex: this.turnIndex,
             logs: this.logs,
             winner: this.winner
         };

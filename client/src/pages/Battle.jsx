@@ -1,7 +1,48 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import axios from 'axios';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls, Text, Html } from '@react-three/drei';
 import CharacterCard from '../components/CharacterCard';
+import * as THREE from 'three';
+
+// 3D Player Component
+const Player3D = ({ position, rotation, isMe, username, avatar, hp, maxHp }) => {
+    const meshRef = useRef();
+
+    useFrame(() => {
+        if (meshRef.current) {
+            // Smooth interpolation could go here
+            meshRef.current.position.lerp(new THREE.Vector3(position.x, position.y, position.z), 0.1);
+            meshRef.current.rotation.y = rotation;
+        }
+    });
+
+    return (
+        <group ref={meshRef} position={[position.x, position.y, position.z]}>
+            {/* Player Body */}
+            <mesh position={[0, 1, 0]}>
+                <capsuleGeometry args={[0.5, 1, 4, 8]} />
+                <meshStandardMaterial color={isMe ? "green" : "red"} />
+            </mesh>
+
+            {/* Username & HP Bar */}
+            <Html position={[0, 2.5, 0]} center>
+                <div className="flex flex-col items-center pointer-events-none">
+                    <div className="text-white font-bold text-sm bg-black bg-opacity-50 px-2 rounded mb-1 whitespace-nowrap">
+                        {username}
+                    </div>
+                    <div className="w-16 h-2 bg-gray-700 rounded-full border border-black">
+                        <div
+                            className="h-full bg-red-500 rounded-full transition-all duration-300"
+                            style={{ width: `${(hp / maxHp) * 100}%` }}
+                        />
+                    </div>
+                </div>
+            </Html>
+        </group>
+    );
+};
 
 const Battle = () => {
     const [socket, setSocket] = useState(null);
@@ -11,7 +52,11 @@ const Battle = () => {
     const [characters, setCharacters] = useState([]);
     const [selectedChar, setSelectedChar] = useState(null);
     const [gameStatus, setGameStatus] = useState('Connecting...');
-    const [logs, setLogs] = useState([]);
+
+    // Movement State
+    const keys = useRef({});
+    const myPosition = useRef({ x: 0, y: 0, z: 0 });
+    const myRotation = useRef(0);
 
     // Fetch User & Characters
     useEffect(() => {
@@ -45,13 +90,13 @@ const Battle = () => {
             newSocket.emit('join_game', {
                 discordId: user.discordId,
                 username: user.username,
-                avatar: user.avatar
+                avatar: user.avatar,
+                discriminator: user.discriminator
             });
         });
 
         newSocket.on('player_list', (list) => {
             setPlayers(list);
-            // Check if I am ready
             const me = list.find(p => p.discordId === user.discordId);
             if (me && me.isReady) {
                 setGameStatus("Waiting for other players...");
@@ -61,11 +106,29 @@ const Battle = () => {
         newSocket.on('game_start', (state) => {
             setGameState(state);
             setGameStatus("BATTLE START!");
+
+            // Initialize my position
+            const me = state.players.find(p => p.discordId === user.discordId);
+            if (me) {
+                myPosition.current = me.position;
+            }
         });
 
-        newSocket.on('turn_update', (state) => {
+        newSocket.on('game_update', (state) => {
             setGameState(state);
-            setLogs(state.logs);
+        });
+
+        newSocket.on('player_moved', (data) => {
+            setGameState(prev => {
+                if (!prev) return null;
+                const newPlayers = prev.players.map(p => {
+                    if (p.socketId === data.socketId) {
+                        return { ...p, position: data.position, rotation: data.rotation };
+                    }
+                    return p;
+                });
+                return { ...prev, players: newPlayers };
+            });
         });
 
         newSocket.on('game_over', (winner) => {
@@ -73,56 +136,110 @@ const Battle = () => {
             setTimeout(() => {
                 setGameState(null);
                 setSelectedChar(null);
-                setLogs([]);
             }, 10000);
-        });
-
-        newSocket.on('action_error', (msg) => {
-            alert(msg);
         });
 
         return () => newSocket.close();
     }, [user]);
+
+    // Input Handling
+    useEffect(() => {
+        const handleKeyDown = (e) => keys.current[e.code] = true;
+        const handleKeyUp = (e) => keys.current[e.code] = false;
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
+    }, []);
+
+    // Game Loop (Movement)
+    useEffect(() => {
+        if (!gameState || !socket) return;
+
+        const interval = setInterval(() => {
+            let moved = false;
+            const speed = 0.2;
+
+            if (keys.current['KeyW']) { myPosition.current.z -= speed; moved = true; myRotation.current = Math.PI; }
+            if (keys.current['KeyS']) { myPosition.current.z += speed; moved = true; myRotation.current = 0; }
+            if (keys.current['KeyA']) { myPosition.current.x -= speed; moved = true; myRotation.current = Math.PI / 2; }
+            if (keys.current['KeyD']) { myPosition.current.x += speed; moved = true; myRotation.current = -Math.PI / 2; }
+
+            if (moved) {
+                socket.emit('player_move', {
+                    position: myPosition.current,
+                    rotation: myRotation.current
+                });
+
+                // Optimistic Update
+                setGameState(prev => {
+                    const newPlayers = prev.players.map(p => {
+                        if (p.discordId === user.discordId) {
+                            return { ...p, position: { ...myPosition.current }, rotation: myRotation.current };
+                        }
+                        return p;
+                    });
+                    return { ...prev, players: newPlayers };
+                });
+            }
+        }, 30); // 30ms tick
+
+        return () => clearInterval(interval);
+    }, [gameState, socket, user]);
 
     const handleSelectChar = (char) => {
         setSelectedChar(char);
         socket.emit('select_character', char);
     };
 
-    const handleAction = (skill, targetId) => {
+    const handleAttack = (skill) => {
+        // Find closest target (simple logic for now)
         if (!gameState) return;
-        socket.emit('submit_action', {
-            attackerId: socket.id,
-            targetId: targetId,
-            skill: skill
+        const me = gameState.players.find(p => p.discordId === user.discordId);
+        const enemies = gameState.players.filter(p => p.discordId !== user.discordId && !p.isDead);
+
+        // Simple range check (e.g., 5 units)
+        const target = enemies.find(e => {
+            const dx = e.position.x - me.position.x;
+            const dz = e.position.z - me.position.z;
+            return Math.sqrt(dx * dx + dz * dz) < 5;
         });
+
+        if (target) {
+            socket.emit('submit_action', {
+                attackerId: socket.id,
+                targetId: target.socketId,
+                skill: skill
+            });
+        } else {
+            console.log("No target in range!");
+        }
     };
 
     if (!user) return <div className="text-white text-center mt-20">Loading User...</div>;
 
-    // LOBBY / CHARACTER SELECT
+    // LOBBY
     if (!gameState) {
         return (
             <div className="text-center mt-10">
                 <h1 className="text-5xl font-bold text-red-600 mb-4">LOBBY</h1>
                 <h2 className="text-2xl text-white mb-8">{gameStatus}</h2>
 
-                {/* Player List */}
                 <div className="flex justify-center gap-8 mb-12">
                     {players.map((p, index) => (
                         <div key={index} className="flex flex-col items-center">
                             <img
-                                src={`https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png`}
+                                src={p.avatar ? `https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png` : `https://cdn.discordapp.com/embed/avatars/${parseInt(p.discriminator) % 5}.png`}
                                 alt={p.username}
                                 className={`w-16 h-16 rounded-full border-4 ${p.isReady ? 'border-green-500' : 'border-gray-500'}`}
                             />
                             <span className="text-white mt-2">{p.username}</span>
-                            <span className="text-xs text-gray-400">{p.isReady ? 'READY' : 'SELECTING...'}</span>
                         </div>
                     ))}
                 </div>
 
-                {/* Character Grid */}
                 {!selectedChar && (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-6xl mx-auto px-4">
                         {characters.map((char, idx) => (
@@ -130,91 +247,60 @@ const Battle = () => {
                         ))}
                     </div>
                 )}
-
-                {selectedChar && (
-                    <div className="text-white">
-                        <p>You selected: <span className="font-bold text-red-400">{selectedChar.name}</span></p>
-                        <p className="text-sm text-gray-400">Waiting for others to start...</p>
-                    </div>
-                )}
             </div>
         );
     }
 
-    // BATTLE INTERFACE
-    const currentPlayer = gameState.players[gameState.turnIndex];
-    const isMyTurn = currentPlayer.socketId === socket.id;
-    const myPlayer = gameState.players.find(p => p.socketId === socket.id);
+    // 3D BATTLE
+    const me = gameState.players.find(p => p.discordId === user.discordId);
 
     return (
-        <div className="max-w-7xl mx-auto p-4">
-            {/* Turn Indicator */}
-            <div className="text-center mb-8">
-                <h1 className="text-4xl font-bold text-white mb-2">{gameStatus}</h1>
-                <div className={`text-2xl font-bold ${isMyTurn ? 'text-green-400 animate-pulse' : 'text-yellow-500'}`}>
-                    {isMyTurn ? "YOUR TURN!" : `${currentPlayer.username}'s Turn`}
-                </div>
-            </div>
+        <div className="w-full h-screen relative">
+            {/* 3D Scene */}
+            <Canvas camera={{ position: [0, 10, 10], fov: 50 }}>
+                <ambientLight intensity={0.5} />
+                <pointLight position={[10, 10, 10]} />
+                <OrbitControls />
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Ground */}
+                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+                    <planeGeometry args={[50, 50]} />
+                    <meshStandardMaterial color="#333" />
+                </mesh>
+
                 {/* Players */}
                 {gameState.players.map((p, idx) => (
-                    <div key={idx} className={`bg-gray-800 p-6 rounded-lg border-2 ${p.socketId === currentPlayer.socketId ? 'border-yellow-500' : 'border-gray-700'} ${p.isDead ? 'opacity-50 grayscale' : ''}`}>
-                        <div className="flex items-center gap-4 mb-4">
-                            <img
-                                src={`https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png`}
-                                className="w-16 h-16 rounded-full"
-                            />
-                            <div>
-                                <h3 className="text-xl font-bold text-white">{p.username}</h3>
-                                <p className="text-red-400">{p.character.name} ({p.class.name})</p>
-                            </div>
-                        </div>
+                    !p.isDead && (
+                        <Player3D
+                            key={idx}
+                            position={p.position}
+                            rotation={p.rotation}
+                            isMe={p.discordId === user.discordId}
+                            username={p.username}
+                            avatar={p.avatar}
+                            hp={p.hp}
+                            maxHp={p.maxHp}
+                        />
+                    )
+                ))}
+            </Canvas>
 
-                        {/* Stats */}
-                        <div className="space-y-2">
-                            <div className="w-full bg-gray-700 rounded-full h-4">
-                                <div className="bg-red-600 h-4 rounded-full transition-all duration-500" style={{ width: `${(p.hp / p.maxHp) * 100}%` }}></div>
-                            </div>
-                            <div className="flex justify-between text-sm text-gray-300">
-                                <span>HP: {p.hp}/{p.maxHp}</span>
-                            </div>
-
-                            <div className="w-full bg-gray-700 rounded-full h-4">
-                                <div className="bg-blue-600 h-4 rounded-full transition-all duration-500" style={{ width: `${(p.mp / p.maxMp) * 100}%` }}></div>
-                            </div>
-                            <div className="flex justify-between text-sm text-gray-300">
-                                <span>MP: {p.mp}/{p.maxMp}</span>
-                            </div>
-                        </div>
-
-                        {/* Action Buttons (Only show on enemies if it's my turn) */}
-                        {isMyTurn && p.socketId !== socket.id && !p.isDead && !myPlayer.isDead && (
-                            <div className="mt-4 grid grid-cols-2 gap-2">
-                                {Skills[myPlayer.class.name.toUpperCase()].map((skill, sIdx) => (
-                                    <button
-                                        key={sIdx}
-                                        disabled={myPlayer.mp < skill.cost || (myPlayer.cooldowns[skill.name] > 0)}
-                                        onClick={() => handleAction(skill, p.socketId)}
-                                        className="bg-red-900 hover:bg-red-700 disabled:bg-gray-600 text-white text-xs py-2 px-1 rounded transition"
-                                    >
-                                        {skill.name} ({skill.cost} MP)
-                                        {myPlayer.cooldowns[skill.name] > 0 && ` [CD: ${myPlayer.cooldowns[skill.name]}]`}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+            {/* UI Overlay */}
+            <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-70 p-4 rounded-lg flex gap-2">
+                {me && !me.isDead && me.class.skills.map((skill, idx) => (
+                    <button
+                        key={idx}
+                        onClick={() => handleAttack(skill)}
+                        className="bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded font-bold text-sm"
+                    >
+                        {skill.name}
+                    </button>
                 ))}
             </div>
 
-            {/* Combat Log */}
-            <div className="mt-8 bg-black bg-opacity-50 p-4 rounded-lg h-48 overflow-y-auto border border-gray-700 font-mono text-sm">
-                {logs.map((log, i) => (
-                    <div key={i} className="text-green-400 border-b border-gray-800 py-1">
-                        {`> ${log}`}
-                    </div>
-                ))}
+            {/* Top Status */}
+            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 text-white font-bold text-xl drop-shadow-md">
+                {gameStatus}
             </div>
         </div>
     );

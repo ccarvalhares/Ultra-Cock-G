@@ -32,7 +32,7 @@ app.use(session({
     cookie: {
         secure: process.env.NODE_ENV === 'production', // true on Render
         sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Cross-site cookie
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     }
 }));
 app.use(passport.initialize());
@@ -138,17 +138,27 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('player_move', (data) => {
+        if (activeGame) {
+            activeGame.updatePlayerPosition(socket.id, data.position, data.rotation);
+            // Broadcast movement immediately to others (optimized)
+            socket.broadcast.emit('player_moved', {
+                socketId: socket.id,
+                position: data.position,
+                rotation: data.rotation
+            });
+        }
+    });
+
     socket.on('submit_action', (action) => {
         if (!activeGame) return;
 
         const result = activeGame.processAction(action);
         if (result.valid) {
-            activeGame.nextTurn();
-            io.emit('turn_update', activeGame.getState());
+            io.emit('game_update', activeGame.getState());
 
             if (activeGame.winner) {
                 io.emit('game_over', activeGame.winner);
-                // Reset game after delay
                 setTimeout(() => {
                     activeGame = null;
                     connectedPlayers.forEach(p => p.isReady = false);
