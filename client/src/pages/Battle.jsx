@@ -12,7 +12,7 @@ const Player3D = ({ position, rotation, isMe, username, avatar, hp, maxHp }) => 
 
     useFrame(() => {
         if (meshRef.current) {
-            // Smooth interpolation could go here
+            // Smooth interpolation
             meshRef.current.position.lerp(new THREE.Vector3(position.x, position.y, position.z), 0.1);
             meshRef.current.rotation.y = rotation;
         }
@@ -29,6 +29,13 @@ const Player3D = ({ position, rotation, isMe, username, avatar, hp, maxHp }) => 
             {/* Username & HP Bar */}
             <Html position={[0, 2.5, 0]} center>
                 <div className="flex flex-col items-center pointer-events-none">
+                    {/* Avatar */}
+                    <img
+                        src={avatar}
+                        alt="avatar"
+                        className="w-8 h-8 rounded-full border border-white mb-1"
+                        onError={(e) => { e.target.onerror = null; e.target.src = "https://cdn.discordapp.com/embed/avatars/0.png"; }}
+                    />
                     <div className="text-white font-bold text-sm bg-black bg-opacity-50 px-2 rounded mb-1 whitespace-nowrap">
                         {username}
                     </div>
@@ -52,6 +59,8 @@ const Battle = () => {
     const [characters, setCharacters] = useState([]);
     const [selectedChar, setSelectedChar] = useState(null);
     const [gameStatus, setGameStatus] = useState('Connecting...');
+    const [gameId, setGameId] = useState(null);
+    const [selectedMode, setSelectedMode] = useState(null); // '1v1' or '1v1v1'
 
     // Movement State
     const keys = useRef({});
@@ -86,21 +95,22 @@ const Battle = () => {
         setSocket(newSocket);
 
         newSocket.on('connect', () => {
-            setGameStatus("Connected to Lobby");
-            newSocket.emit('join_game', {
-                discordId: user.discordId,
-                username: user.username,
-                avatar: user.avatar,
-                discriminator: user.discriminator
-            });
+            setGameStatus("Select Game Mode");
         });
 
-        newSocket.on('player_list', (list) => {
+        newSocket.on('queue_update', (list) => {
             setPlayers(list);
-            const me = list.find(p => p.discordId === user.discordId);
-            if (me && me.isReady) {
-                setGameStatus("Waiting for other players...");
-            }
+            setGameStatus(`In Queue (${list.length} players)`);
+        });
+
+        newSocket.on('game_found', ({ gameId, players }) => {
+            setGameId(gameId);
+            setPlayers(players);
+            setGameStatus("Game Found! Select Character");
+        });
+
+        newSocket.on('player_list_update', (list) => {
+            setPlayers(list);
         });
 
         newSocket.on('game_start', (state) => {
@@ -135,7 +145,10 @@ const Battle = () => {
             setGameStatus(`GAME OVER! Winner: ${winner.username}`);
             setTimeout(() => {
                 setGameState(null);
+                setGameId(null);
                 setSelectedChar(null);
+                setSelectedMode(null);
+                setGameStatus("Select Game Mode");
             }, 10000);
         });
 
@@ -156,7 +169,7 @@ const Battle = () => {
 
     // Game Loop (Movement)
     useEffect(() => {
-        if (!gameState || !socket) return;
+        if (!gameState || !socket || !gameId) return;
 
         const interval = setInterval(() => {
             let moved = false;
@@ -169,6 +182,7 @@ const Battle = () => {
 
             if (moved) {
                 socket.emit('player_move', {
+                    gameId,
                     position: myPosition.current,
                     rotation: myRotation.current
                 });
@@ -187,16 +201,28 @@ const Battle = () => {
         }, 30); // 30ms tick
 
         return () => clearInterval(interval);
-    }, [gameState, socket, user]);
+    }, [gameState, socket, user, gameId]);
+
+    const handleJoinQueue = (mode) => {
+        setSelectedMode(mode);
+        socket.emit('join_queue', {
+            userData: {
+                discordId: user.discordId,
+                username: user.username,
+                avatar: user.avatar,
+                discriminator: user.discriminator
+            },
+            mode
+        });
+    };
 
     const handleSelectChar = (char) => {
         setSelectedChar(char);
-        socket.emit('select_character', char);
+        socket.emit('select_character', { gameId, character: char });
     };
 
     const handleAttack = (skill) => {
-        // Find closest target (simple logic for now)
-        if (!gameState) return;
+        if (!gameState || !gameId) return;
         const me = gameState.players.find(p => p.discordId === user.discordId);
         const enemies = gameState.players.filter(p => p.discordId !== user.discordId && !p.isDead);
 
@@ -209,38 +235,73 @@ const Battle = () => {
 
         if (target) {
             socket.emit('submit_action', {
-                attackerId: socket.id,
-                targetId: target.socketId,
-                skill: skill
+                gameId,
+                action: {
+                    attackerId: socket.id,
+                    targetId: target.socketId,
+                    skill: skill
+                }
             });
-        } else {
-            console.log("No target in range!");
         }
+    };
+
+    const getAvatarUrl = (p) => {
+        if (p.avatar) {
+            return `https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png`;
+        }
+        // Default avatar logic
+        const disc = p.discriminator || '0';
+        const index = disc === '0' ? (BigInt(p.discordId) >> 22n) % 6n : parseInt(disc) % 5;
+        return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
     };
 
     if (!user) return <div className="text-white text-center mt-20">Loading User...</div>;
 
-    // LOBBY
+    // MODE SELECTION
+    if (!selectedMode) {
+        return (
+            <div className="text-center mt-20">
+                <h1 className="text-5xl font-bold text-red-600 mb-8">SELECT GAME MODE</h1>
+                <div className="flex justify-center gap-8">
+                    <button
+                        onClick={() => handleJoinQueue('1v1')}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-2xl font-bold py-8 px-12 rounded-lg border-4 border-blue-400 transition transform hover:scale-105"
+                    >
+                        1 v 1
+                    </button>
+                    <button
+                        onClick={() => handleJoinQueue('1v1v1')}
+                        className="bg-red-600 hover:bg-red-500 text-white text-2xl font-bold py-8 px-12 rounded-lg border-4 border-red-400 transition transform hover:scale-105"
+                    >
+                        1 v 1 v 1
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+    // LOBBY / CHARACTER SELECT
     if (!gameState) {
         return (
             <div className="text-center mt-10">
-                <h1 className="text-5xl font-bold text-red-600 mb-4">LOBBY</h1>
+                <h1 className="text-5xl font-bold text-red-600 mb-4">LOBBY ({selectedMode})</h1>
                 <h2 className="text-2xl text-white mb-8">{gameStatus}</h2>
 
                 <div className="flex justify-center gap-8 mb-12">
                     {players.map((p, index) => (
                         <div key={index} className="flex flex-col items-center">
                             <img
-                                src={p.avatar ? `https://cdn.discordapp.com/avatars/${p.discordId}/${p.avatar}.png` : `https://cdn.discordapp.com/embed/avatars/${parseInt(p.discriminator) % 5}.png`}
+                                src={getAvatarUrl(p)}
                                 alt={p.username}
                                 className={`w-16 h-16 rounded-full border-4 ${p.isReady ? 'border-green-500' : 'border-gray-500'}`}
+                                onError={(e) => { e.target.onerror = null; e.target.src = "https://cdn.discordapp.com/embed/avatars/0.png"; }}
                             />
                             <span className="text-white mt-2">{p.username}</span>
                         </div>
                     ))}
                 </div>
 
-                {!selectedChar && (
+                {gameId && !selectedChar && (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-6xl mx-auto px-4">
                         {characters.map((char, idx) => (
                             <CharacterCard key={idx} character={char} onSelect={handleSelectChar} />
@@ -277,7 +338,7 @@ const Battle = () => {
                             rotation={p.rotation}
                             isMe={p.discordId === user.discordId}
                             username={p.username}
-                            avatar={p.avatar}
+                            avatar={getAvatarUrl(p)}
                             hp={p.hp}
                             maxHp={p.maxHp}
                         />

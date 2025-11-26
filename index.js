@@ -106,64 +106,92 @@ const io = new Server(server, {
 
 // Game State
 const GameState = require('./src/domain/GameState');
-let connectedPlayers = [];
-let activeGame = null;
+let queues = {
+    '1v1': [],
+    '1v1v1': []
+};
+let activeGames = {}; // { gameId: GameState }
 
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
-    socket.on('join_game', (userData) => {
-        // Avoid duplicates
-        if (!connectedPlayers.find(p => p.discordId === userData.discordId)) {
-            connectedPlayers.push({ ...userData, socketId: socket.id, isReady: false });
+    socket.on('join_queue', ({ userData, mode }) => {
+        // Remove from other queues first
+        for (const m in queues) {
+            queues[m] = queues[m].filter(p => p.discordId !== userData.discordId);
         }
 
-        io.emit('player_list', connectedPlayers);
-    });
+        // Add to selected queue
+        const player = { ...userData, socketId: socket.id, isReady: false, mode };
+        queues[mode].push(player);
+        socket.join(mode); // Join room
 
-    socket.on('select_character', (character) => {
-        const player = connectedPlayers.find(p => p.socketId === socket.id);
-        if (player) {
-            player.character = character;
-            player.class = character.class; // Flatten for easier access
-            player.isReady = true;
-            io.emit('player_list', connectedPlayers);
+        io.to(mode).emit('queue_update', queues[mode]);
 
-            // Check if all 3 players are ready
-            const readyPlayers = connectedPlayers.filter(p => p.isReady);
-            if (readyPlayers.length >= 3 && !activeGame) {
-                activeGame = new GameState(readyPlayers);
-                io.emit('game_start', activeGame.getState());
-            }
-        }
-    });
+        // Check if queue is full
+        const requiredPlayers = mode === '1v1' ? 2 : 3;
+        if (queues[mode].length >= requiredPlayers) {
+            // Create Game
+            const players = queues[mode].splice(0, requiredPlayers);
+            const gameId = `game_${Date.now()}_${mode}`;
 
-    socket.on('player_move', (data) => {
-        if (activeGame) {
-            activeGame.updatePlayerPosition(socket.id, data.position, data.rotation);
-            // Broadcast movement immediately to others (optimized)
-            socket.broadcast.emit('player_moved', {
-                socketId: socket.id,
-                position: data.position,
-                rotation: data.rotation
+            const game = new GameState(players);
+            activeGames[gameId] = game;
+
+            // Notify players
+            players.forEach(p => {
+                const s = io.sockets.sockets.get(p.socketId);
+                if (s) {
+                    s.leave(mode);
+                    s.join(gameId);
+                    s.emit('game_found', { gameId, players });
+                }
             });
         }
     });
 
-    socket.on('submit_action', (action) => {
-        if (!activeGame) return;
+    socket.on('select_character', ({ gameId, character }) => {
+        const game = activeGames[gameId];
+        if (!game) return;
 
-        const result = activeGame.processAction(action);
+        const player = game.players.find(p => p.socketId === socket.id);
+        if (player) {
+            player.character = character;
+            player.class = character.class;
+            player.isReady = true;
+
+            io.to(gameId).emit('player_list_update', game.players);
+
+            // Check if all ready
+            if (game.players.every(p => p.isReady)) {
+                io.to(gameId).emit('game_start', game.getState());
+            }
+        }
+    });
+
+    socket.on('player_move', ({ gameId, position, rotation }) => {
+        const game = activeGames[gameId];
+        if (game) {
+            game.updatePlayerPosition(socket.id, position, rotation);
+            socket.to(gameId).emit('player_moved', {
+                socketId: socket.id,
+                position,
+                rotation
+            });
+        }
+    });
+
+    socket.on('submit_action', ({ gameId, action }) => {
+        const game = activeGames[gameId];
+        if (!game) return;
+
+        const result = game.processAction(action);
         if (result.valid) {
-            io.emit('game_update', activeGame.getState());
+            io.to(gameId).emit('game_update', game.getState());
 
-            if (activeGame.winner) {
-                io.emit('game_over', activeGame.winner);
-                setTimeout(() => {
-                    activeGame = null;
-                    connectedPlayers.forEach(p => p.isReady = false);
-                    io.emit('player_list', connectedPlayers);
-                }, 10000);
+            if (game.winner) {
+                io.to(gameId).emit('game_over', game.winner);
+                delete activeGames[gameId];
             }
         } else {
             socket.emit('action_error', result.message);
@@ -171,19 +199,26 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-        connectedPlayers = connectedPlayers.filter(p => p.socketId !== socket.id);
-        io.emit('player_list', connectedPlayers);
+        // Remove from queues
+        for (const m in queues) {
+            queues[m] = queues[m].filter(p => p.socketId !== socket.id);
+            io.to(m).emit('queue_update', queues[m]);
+        }
 
-        if (activeGame && activeGame.players.find(p => p.socketId === socket.id)) {
-            io.emit('game_over', { username: "Game Aborted (Player Disconnected)" });
-            activeGame = null;
+        // Handle active games (abort)
+        for (const id in activeGames) {
+            const game = activeGames[id];
+            if (game.players.find(p => p.socketId === socket.id)) {
+                io.to(id).emit('game_over', { username: "Game Aborted (Player Disconnected)" });
+                delete activeGames[id];
+            }
         }
     });
 });
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
+    console.error("Global Error Handler:", err.stack);
     res.status(500).send('Internal Server Error: ' + err.message);
 });
 
